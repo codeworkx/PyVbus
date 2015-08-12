@@ -3,7 +3,7 @@
 import ssl
 import socket
 from time import sleep
-
+from functools import reduce
 
 MODE_COMMAND = 0
 MODE_DATA = 1
@@ -14,37 +14,28 @@ DEBUG_PROTOCOL = 0b0100
 DEBUG_ALL = 0b1111
 
 RECOVER_TIME = 1
-_FRAME_COUNT = 15
+_FRAME_COUNT = 9
 _HIGHEST_BIT = 0x7F
 _FILTER = ''.join([(len(repr(chr(x))) == 3) and chr(x) or '.' for x in range(256)])
-_PAYLOADSIZE = 60
+_PAYLOADSIZE = 54
 _PAYLOADMAP = {
-    # See http://tubifex.nl/wordpress/wp-content/uploads/2013/05/VBus-Protokollspezification_en_270111.pdf#53
-    # Did not implement mask
+
+    # Sonnenkraft SKSC2 HE 0x4214
     # Offset, size, factor
-    'temp1': (0, 2, 0.1),
-    'temp2': (2, 2, 0.1),
-    'temp3': (4, 2, 0.1),
-    'temp4': (6, 2, 0.1),
-    'temp5': (8, 2, 0.1),
-    'temprps': (10, 2, 0.1),
-    'presrps': (12, 2, 0.1),
-    'tempvfs': (14, 2, 0.1),
-    'flowvfs': (16, 2, 1),
-    'flowv40': (18, 2, 1),
-    'unit': (20, 1, 1),
-    'pwm1': (22, 1, 1),  # Strange padding?
-    'pwm2': (23, 1, 1),
-    'pump1': (24, 1, 1),
-    'pump2': (25, 1, 1),
-    'pump3': (26, 1, 1),
-    'pump4': (27, 1, 1),
-    'opsec1': (28, 4, 1),
-    'opsec2': (32, 4, 1),
-    'opsec3': (36, 4, 1),
-    'opsec4': (40, 4, 1),
-    'error': (44, 2, 1),
-    'tatus': (46, 2, 1)
+    'temp1': (0, 2, 0.1), # Temperature S1
+    'temp2': (2, 2, 0.1), # Temperature S2
+    'temp3': (4, 2, 0.1), # Temperature S3
+    'temp4': (6, 2, 0.1), # Temperature S4
+    'rel1': (8, 1, 1), # Relais 1
+    'rel2': (9, 1, 1), # Relais 2
+    'error': (10, 1, 1), # Error mask
+    'rel1oph': (12, 2, 1), # Operating hours Relais 1
+    'rel2oph': (14, 2, 1), # Operating hours Relais 2
+    'heat': (16, 4, 1), # Amount of heat
+    'temp5': (24, 2, 0.1), # Temperature VFD1
+    'flow5': (26, 2, 1), # Volumetric flow rate VFD1
+    'voltage': (32, 1, 0.1), # Voltage
+
 }
 
 
@@ -63,11 +54,10 @@ class _TERM:
 
 def _hexdump(src, length=16):
     result = []
-    for i in xrange(0, len(src), length):
+    for i in range(0, len(src), length):
         s = src[i:i + length]
-        hexa = ' '.join(["%02X" % ord(x) for x in s])
-        printable = s.translate(_FILTER)
-        result.append("%04X   %-*s   %s\n" % (i, length * 3, hexa, printable))
+        hexa = ' '.join(["%02X" % x for x in s])
+        result.append("%04X   %-*s \n" % (i, length * 3, hexa))
     return "Len %iB\n%s" % (len(src), ''.join(result))
 
 
@@ -83,10 +73,15 @@ class VBUSResponse(object):
     """
     def __init__(self, line):
         assert len(line) > 2
-        self.positive = line[0] == "+"
-        spl = line[1:].split(":", 1)
-        self.type = spl[0]
-        self.message = None if len(spl) == 1 else spl[1][:1]
+        self.positive = str(chr(line[0])) == '+'
+        
+        # Convert byte-object to string
+        str_line = ''
+        for b in line:
+            str_line += str(chr(b))
+
+        print('< ', str_line)
+        self.type = str_line
 
 
 class VBUSConnection(object):
@@ -131,7 +126,7 @@ class VBUSConnection(object):
         if sslsock:  # Unlikely that we'll ever connect to the VBUS using an ssl socket but "why not?"
             self._sock = ssl.wrap_socket(self._sock)
         self._sock.connect((self.host, self.port))
-        assert VBUSResponse(self._lrecv()).type == "HELLO"
+        assert VBUSResponse(self._lrecv()).type == "+HELLO"
         if self.password:
             if not self.authenticate():
                 raise VBUSException("Could not authenticate")
@@ -175,41 +170,57 @@ class VBUSConnection(object):
             self._mode = MODE_DATA
 
         while True:
-            # Wait till we get the correct protocol
-            for d in self._brecv().split(chr(0xAA)):
-                # Check the protocol
-                if self._getbytes(d, 4, 5) is not 0x10:
-                    continue
+            for data in self._brecv().split(b"\xaa"):
+                if len(data) > 5:
 
-                # Are we getting a payload?
-                if self._getbytes(d, 5, 7) is not 0x100:
-                    continue
+                    # Wait till we get the correct protocol               
+                    if self._getbytes(data, 4, 5) is not 0x10:
+                        continue
 
-                if self.debugmode & DEBUG_PROTOCOL:
-                    print("Source map: 0X%02X" % self._getbytes(d, 2, 4))
-
-                # Is the checksum valid?
-                if self._checksum(d[0:8]) is not self._getbytes(d, 8, 9):
                     if self.debugmode & DEBUG_PROTOCOL:
-                        print("Invalid checksum: got %02X expected %02X" % \
-                              (self._checksum(d[0:8]), self._getbytes(d, 8, 9)))
-                    continue
+                        print('-----------------------------------------')
+                        print("Src: 0X%02X" % self._getbytes(data, 0, 2))
+                        print("Dst: 0X%02X" % self._getbytes(data, 2, 4))
+                        print('Protocol version:', hex(data[4]))
 
-                # Check payload length
-                frames = self._getbytes(d, 7, 8)
-                payload = d[9:9 + (6 * frames)]
-                if len(payload) is not 6 * frames:
-                    if self.debugmode & DEBUG_PROTOCOL:
-                        print("Unexpected payload length: %i != %i" % \
-                              (len(payload), 6 * frames))
-                    continue
+                    if len(data) > 8:
+                        if self.debugmode & DEBUG_PROTOCOL:
+                            print("Cmd: 0X%02X" % self._getbytes(data, 5, 7))
 
-                r = self._parsepayload(payload, payloadmap, payloadsize, framecount)
-                if r:
-                    return r
-            # The vbus freaks out when you send too many requests
-            # This can be solved by just waiting
-            sleep(RECOVER_TIME)
+                        # Are we getting a payload?             
+                        if self._getbytes(data, 5, 7) is not 0x100:
+                           continue
+
+                        if self.debugmode & DEBUG_PROTOCOL:
+                            print("Source map: 0X%02X" % self._getbytes(data, 2, 4))
+
+                        # Is the checksum valid?
+                        if self._checksum(data[0:8]) is not data[8]:
+                            if self.debugmode & DEBUG_PROTOCOL:    
+                                print("Invalid checksum: got %d expected %d" % \
+                                      (self._checksum(data[0:8]), data[8]))
+                            continue
+
+                        # Check payload length
+                        frames = data[7]
+                        if self.debugmode & DEBUG_PROTOCOL:
+                            print('Frames:', frames)
+                        p_end = 9 + (6 * frames)
+                        payload = data[9:p_end]
+                        if len(payload) is not 6 * frames:
+                            if self.debugmode & DEBUG_PROTOCOL:
+                                print("Unexpected payload length: %i != %i" % \
+                                      (len(payload), 6 * frames))
+                            continue
+
+                        r = self._parsepayload(payload, payloadmap, payloadsize, framecount)
+                        if r:
+                            print(r)
+                            return r
+
+                # The vbus freaks out when you send too many requests
+                # This can be solved by just waiting
+                sleep(RECOVER_TIME)
 
     def getmode(self):
         """
@@ -224,36 +235,35 @@ class VBUSConnection(object):
                 print("Payload size mismatch: expected %i got %i", payloadsize, len(payload))
             return None
 
-        if True in [ord(i) > _HIGHEST_BIT for i in payload]:
+        if True in [i > _HIGHEST_BIT for i in payload]:
             if self.debugmode & DEBUG_PROTOCOL:
                 print("Found highest byte discarding payload")
                 print(' '.join(
-                    "%02X" % ord(i) if ord(i) <= _HIGHEST_BIT else "%s%02X%s" % (_TERM.RED, ord(i), _TERM.END)
+                    "%02X" % i if i <= _HIGHEST_BIT else "%s%02X%s" % (_TERM.RED, i, _TERM.END)
                     for i in payload
                 ))
             return None
 
-        if self.debugmode & DEBUG_PROTOCOL:
-            print("%i frames" % (len(payload)/6, ))
-        if (len(payload)/6) is not framecount:
+        if (len(payload) / 6) != framecount:
             if self.debugmode & DEBUG_PROTOCOL:
-                print("Invalid frame count")
+                print("Invalid frame count %d (%d)" % (framecount, len(payload) / 6))
             return None
-        for i in range(len(payload) / 6):
+
+        for i in range(int(len(payload) / 6)):
             frame = payload[i * 6:i * 6 + 6]
             if self.debugmode & DEBUG_PROTOCOL:
-                print("Frame %i: %s" % (i, ' '.join("%02X" % ord(i) for i in frame)))
+                print("Frame %i: %s" % (i, ' '.join("%02X" % i for i in frame)))
 
             # Check frame checksum
-            if ord(frame[5]) is not self._checksum(frame[:-1]):
+            if frame[5] is not self._checksum(frame[:-1]):
                 if self.debugmode & DEBUG_PROTOCOL:
-                    print("Frame checksum mismatch: ", ord(frame[5]), self._checksum(frame[:-1]))
+                    print("Frame checksum mismatch: ", frame[5], self._checksum(frame[:-1]))
                 return None
 
-            septet = ord(frame[4])
+            septet = frame[4]
             for j in range(4):
                 if septet & (1 << j):
-                    data.append(chr(ord(frame[j]) | 0x80))
+                    data.append(frame[j] | 0x80)
                 else:
                     data.append(frame[j])
 
@@ -266,8 +276,9 @@ class VBUSConnection(object):
                 bits = (rng[1]) * 8
                 if vals[i] >= 1 << (bits - 1):
                     vals[i] -= 1 << bits
+
             # Apply factor
-            vals[i] *= rng[2]
+            vals[i] = vals[i] * rng[2]
 
         if self.debugmode & DEBUG_PROTOCOL:
             print(vals)
@@ -275,34 +286,43 @@ class VBUSConnection(object):
 
     @staticmethod
     def _checksum(data):
-        return reduce(lambda chk, b: ((chk - ord(b)) % 0x100) & 0x7F, data, 0x7F)
+        crc = 0x7F
+        for d in data:
+            crc = (crc - d) & 0x7F
+        return crc
 
     @staticmethod
     def _getbytes(data, begin, end):
-        return sum([ord(b) << (i * 8) for i, b in enumerate(data[begin:end])])
+        return sum([b << (i * 8) for i, b in enumerate(data[begin:end])])
 
     def _lrecv(self):
-        c, s = '', ''
+        c = b''
+        s = b''
         while c != b'\n':
             c = self._sock.recv(1)
             if c == '':
                 break
-            s += c.decode("utf-8") 
-        s = s.strip('\r\n')
+            if c != b'\n':
+                s += c
         if self.debugmode & DEBUG_COMMAND:
-            print("< " + s)
+            print("< %s" % s)
         return s
 
     def _brecv(self, n=1024):
         d = self._sock.recv(n)
+
+        while d.count(b"\xaa") < 4:
+            d += self._sock.recv(n)
+
         if self.debugmode & DEBUG_HEXDUMP:
             print(_hexdump(d))
+
         return d
 
     def _lsend(self, s):
         if self.debugmode & DEBUG_COMMAND:
             print("> " + s)
-            msg = s + "\r\n"
+        msg = s + "\r\n"
         self._sock.send(msg.encode("utf-8"))
 
     def _bsend(self, s):
