@@ -1,11 +1,11 @@
-PyVbus
-==============
+PyVbus for Sonnenkraft SKSC2 HE
+===============================
 
 ## Usage
 ```python
 import Vbus
 con = Vbus.VBUSConnection(
-    "HOST", password="ILikeCheese"
+    "HOST", password="vbus"
     # These are optional. This is the same as setting debugmode to DEBUG_ALL
 #   ,debugmode = Vbus.DEBUG_HEXDUMP | Vbus.DEBUG_COMMAND | Vbus.DEBUG_PROTOCOL
 )
@@ -15,7 +15,7 @@ con.connect()
 data = con.data()
 print data # Print the datamap
 
-# Use a custom payloadmap
+# Use a custom payloadmap (not necessary for SKSC2 HE)
 payloadmap = {
     # Offset, size, factor
     'temp1': (0, 2, 0.1),
@@ -31,10 +31,10 @@ data = con.data(payloadmap)
 print data
 ```
 ## Payloadmaps
-If you do not know what the source map of your vbus device then enable `DEBUG_PROTOCOL`. This will make it print the source map identifier. You can look up how to implement your source map by just searching for the source map hex in [this document](http://tubifex.nl/wordpress/wp-content/uploads/2013/05/VBus-Protokollspezification_en_270111.pdf).
+If you do not know what the source map of your vbus device then enable `DEBUG_PROTOCOL`. This will make it print the source map identifier. You can look up how to implement your source map by just searching for the source map hex in [this document](https://danielwippermann.github.io/resol-vbus/vbus-packets.html).
 
 ## Python support
-PyVbus supports both Python3 as well as Python2. Please note what version you are using and mention it when creating an issue.
+PyVbus supports only Python3 and is tested on Python 3.4.
 
 ## Screenshot
 This screenshot was taken with all the debugmodes enabled.
