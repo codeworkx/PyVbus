@@ -31,7 +31,7 @@ _PAYLOADMAP = {
     'error': (10, 1, 1), # Error mask
     'rel1oph': (12, 2, 1), # Operating hours Relais 1
     'rel2oph': (14, 2, 1), # Operating hours Relais 2
-    'heat': (16, 4, 1), # Amount of heat
+    'heat': (16, 6, 1), # Amount of heat
     'temp5': (24, 2, 0.1), # Temperature VFD1
     'flow5': (26, 2, 1), # Volumetric flow rate VFD1
     'voltage': (32, 1, 0.1), # Voltage
